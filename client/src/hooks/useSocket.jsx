@@ -14,8 +14,8 @@ export function SocketProvider({ children }) {
 
   useEffect(() => {
     if (user && !socketRef.current) {
-      // Connect and pass the JWT so the server can optionally verify it
-      socketRef.current = io(import.meta.env.VITE_API_URL, {
+      // In production VITE_API_URL is not set, so fall back to the current origin
+      socketRef.current = io(import.meta.env.VITE_API_URL || window.location.origin, {
         auth: { token: localStorage.getItem('token') }
       });
 

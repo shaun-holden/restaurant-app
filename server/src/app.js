@@ -37,6 +37,19 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/upload', uploadRoutes);
 
+// ── PRODUCTION: SERVE REACT CLIENT ────────────────────────────────────────
+// In production (Railway), Express serves the built React app as static files.
+// Any request that isn't an API route falls through to index.html so React
+// Router can handle client-side navigation (e.g. /cart, /orders/123).
+if (process.env.NODE_ENV === 'production') {
+  const path = require('path');
+  const clientDist = path.join(__dirname, '../../client/dist');
+  app.use(express.static(clientDist));
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(clientDist, 'index.html'));
+  });
+}
+
 // ── ERROR HANDLER ─────────────────────────────────────────────────────────
 app.use(errorHandler);
 
