@@ -1,6 +1,8 @@
 # BurgerHouse — Full-Stack Restaurant Ordering System
 
-A full-stack restaurant ordering system with a customer-facing menu, cart, Stripe checkout, real-time order tracking via Socket.IO, and a staff dashboard for managing orders and the menu.
+A full-stack restaurant ordering system with a customer-facing menu, cart, Stripe checkout, real-time order tracking, and a staff dashboard for managing live orders and the menu.
+
+**Live demo:** https://backend-production-71c4.up.railway.app
 
 ---
 
@@ -15,7 +17,7 @@ A full-stack restaurant ordering system with a customer-facing menu, cart, Strip
 | Payments | Stripe (PaymentIntent flow) |
 | Image Upload | Cloudinary (signed direct uploads) |
 | Auth | JWT (stored in localStorage) |
-| Deployment | Vercel (frontend) + Railway (backend + database) |
+| Deployment | Railway (single service — Express serves the React build) |
 
 ---
 
@@ -25,7 +27,7 @@ A full-stack restaurant ordering system with a customer-facing menu, cart, Strip
 - Browse menu by category with live search
 - Customize items — radio (size) and checkbox (add-ons) option groups
 - Cart with localStorage persistence (survives page refresh)
-- Pickup or delivery checkout with Stripe
+- Pickup or delivery checkout with Stripe test cards
 - Real-time order status tracking via WebSocket
 
 ### Staff / Admin
@@ -41,24 +43,24 @@ A full-stack restaurant ordering system with a customer-facing menu, cart, Strip
 
 ```
 RestaurantApp/
-├── package.json          ← root scripts (used by Railway)
-├── client/               ← React app → deploys to Vercel
+├── package.json          ← root build/start scripts (used by Railway)
+├── client/               ← React app (built into client/dist by Railway)
 │   ├── src/
-│   │   ├── hooks/        ← useAuth, useCart, useSocket
+│   │   ├── hooks/        ← useAuth, useCart, useSocket (React Context)
 │   │   ├── pages/        ← Home, Cart, Checkout, OrderTracking, staff/
-│   │   ├── components/   ← layout, menu, cart, order, checkout, common
-│   │   └── utils/        ← api.js (Axios), formatCurrency.js
-│   └── .env
-└── server/               ← Express API → deploys to Railway
+│   │   ├── components/   ← layout, menu, cart, order, common
+│   │   └── utils/        ← api.js (Axios instance), formatCurrency.js
+│   └── .env              ← VITE_API_URL, VITE_STRIPE_PUBLISHABLE_KEY
+└── server/               ← Express API
     ├── prisma/
-    │   ├── schema.prisma ← database models
-    │   └── seed.js       ← sample menu data + staff accounts
+    │   ├── schema.prisma ← 9 database models
+    │   └── seed.js       ← sample menu + staff accounts
     ├── src/
     │   ├── controllers/  ← auth, menu, order, payment, upload
     │   ├── routes/       ← one file per resource
     │   ├── middleware/   ← auth.js, errorHandler.js, validate.js
-    │   └── socket/       ← socketHandler.js (rooms + events)
-    └── .env
+    │   └── socket/       ← socketHandler.js (join:order, join:staff rooms)
+    └── .env              ← all server secrets
 ```
 
 ---
@@ -77,10 +79,7 @@ RestaurantApp/
 git clone https://github.com/shaun-holden/restaurant-app.git
 cd restaurant-app
 
-# Install server deps
 cd server && npm install
-
-# Install client deps
 cd ../client && npm install
 ```
 
@@ -88,12 +87,12 @@ cd ../client && npm install
 
 **`server/.env`**
 ```env
-DATABASE_URL="postgresql://..."         # from Railway Postgres service
+DATABASE_URL="postgresql://..."         # from Railway Postgres → public URL
 JWT_SECRET="your-32-char-random-string"
 JWT_EXPIRES_IN="7d"
 CLIENT_URL="http://localhost:5173"
 STRIPE_SECRET_KEY="sk_test_..."
-STRIPE_WEBHOOK_SECRET="whsec_..."       # from stripe listen CLI
+STRIPE_WEBHOOK_SECRET="whsec_..."       # from: stripe listen CLI (see step 5)
 CLOUDINARY_CLOUD_NAME="your-name"
 CLOUDINARY_API_KEY="your-key"
 CLOUDINARY_API_SECRET="your-secret"
@@ -125,14 +124,14 @@ node prisma/seed.js                   # loads sample menu + staff accounts
 Open two terminals:
 
 ```bash
-# Terminal 1 — backend
+# Terminal 1 — backend (auto-restarts on file changes)
 cd server && npm run dev
 
 # Terminal 2 — frontend
 cd client && npm run dev
 ```
 
-Open `http://localhost:5173`
+Open http://localhost:5173
 
 ### 5. Test Stripe webhooks locally
 
@@ -141,7 +140,9 @@ Open `http://localhost:5173`
 brew install stripe/stripe-cli/stripe
 
 # Forward webhooks to your local server
-stripe listen --forward-to localhost:5000/api/payments/webhook
+stripe listen \
+  --api-key sk_test_YOUR_KEY \
+  --forward-to localhost:5000/api/payments/webhook
 ```
 
 Copy the printed `whsec_...` secret into `server/.env` as `STRIPE_WEBHOOK_SECRET`.
@@ -155,7 +156,7 @@ Copy the printed `whsec_...` secret into `server/.env` as `STRIPE_WEBHOOK_SECRET
 | Admin | admin@restaurant.com | admin123 |
 | Staff | staff@restaurant.com | staff123 |
 
-Register any new account to get a CUSTOMER role.
+Register any new account to get the CUSTOMER role.
 
 ## Test Payment
 
@@ -188,18 +189,17 @@ Use Stripe's test card:
 ### Orders
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/api/orders` | CUSTOMER | Place order |
 | GET | `/api/orders` | Any | Own orders (CUSTOMER) or all (STAFF/ADMIN) |
-| GET | `/api/orders/active` | STAFF/ADMIN | Active orders for dashboard |
+| GET | `/api/orders/active` | STAFF/ADMIN | Non-delivered orders for dashboard |
 | GET | `/api/orders/:id` | Any | Single order detail |
 | PATCH | `/api/orders/:id/status` | STAFF/ADMIN | Advance order status |
-| PATCH | `/api/orders/:id/cancel` | CUSTOMER | Cancel pending order |
+| PATCH | `/api/orders/:id/cancel` | CUSTOMER | Cancel a pending order |
 
 ### Payments
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/api/payments/create-intent` | CUSTOMER | Create Stripe PaymentIntent |
-| POST | `/api/payments/webhook` | Stripe | Handle payment confirmation |
+| POST | `/api/payments/webhook` | Stripe | Handle `payment_intent.succeeded` |
 
 ### Upload
 | Method | Path | Auth | Description |
@@ -212,42 +212,62 @@ Use Stripe's test card:
 
 | Event | Direction | Description |
 |---|---|---|
-| `join:order` | Client → Server | Customer subscribes to their order's updates |
-| `join:staff` | Client → Server | Staff subscribes to all new orders |
-| `order:new` | Server → Staff | Emitted when a new order is placed |
-| `order:status_update` | Server → All | Emitted when order status changes |
+| `join:order` | Client → Server | Customer subscribes to their order's real-time updates |
+| `join:staff` | Client → Server | Staff joins the room for all new orders |
+| `order:new` | Server → Staff | Fired when a new order is placed |
+| `order:status_update` | Server → All | Fired when order status changes |
 
 ---
 
-## Deployment
+## Deployment (Railway)
 
-### Backend → Railway
+Everything runs as a single Railway service. In production, Express serves the built React app as static files — no separate frontend host needed.
 
-```bash
-# Set env vars on Railway (repeat for each variable)
-railway variables set STRIPE_SECRET_KEY=sk_live_...
-railway variables set JWT_SECRET=...
-railway variables set CLIENT_URL=https://your-app.vercel.app
-# ... all other server/.env variables
+### How it works
 
-# Deploy
-git push  # Railway auto-deploys from your connected GitHub repo
+```
+Railway build:  npm run build
+  → cd client && npm run build    (creates client/dist/)
+  → cd server && npx prisma generate
+
+Railway start:  npm start
+  → npx prisma migrate deploy     (runs any pending migrations)
+  → node src/server.js            (Express serves API + client/dist)
 ```
 
-### Frontend → Vercel
+### Deploy a new version
 
 ```bash
-cd client
-npx vercel --prod
-# Set VITE_API_URL and VITE_STRIPE_PUBLISHABLE_KEY in Vercel dashboard
+git add .
+git commit -m "your message"
+git push
+railway up --service backend --detach
 ```
 
-### Stripe Webhook (production)
+### Required Railway environment variables
 
-1. Stripe Dashboard → Developers → Webhooks → Add endpoint
-2. URL: `https://your-railway-url.up.railway.app/api/payments/webhook`
+```
+NODE_ENV=production
+DATABASE_URL=${{Postgres.DATABASE_URL}}   ← auto-links to Postgres service
+JWT_SECRET=...
+JWT_EXPIRES_IN=7d
+STRIPE_SECRET_KEY=sk_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+CLOUDINARY_CLOUD_NAME=...
+CLOUDINARY_API_KEY=...
+CLOUDINARY_API_SECRET=...
+```
+
+### Stripe webhook (production)
+
+1. Stripe Dashboard → Developers → Webhooks → **Add endpoint**
+2. URL: `https://backend-production-71c4.up.railway.app/api/payments/webhook`
 3. Event: `payment_intent.succeeded`
-4. Copy the signing secret → add to Railway as `STRIPE_WEBHOOK_SECRET`
+4. Copy the signing secret → update Railway variable:
+
+```bash
+railway variable --service backend --set "STRIPE_WEBHOOK_SECRET=whsec_..."
+```
 
 ---
 
@@ -255,8 +275,8 @@ npx vercel --prod
 
 ```
 PENDING → CONFIRMED → PREPARING → READY → DELIVERED
-                                         ↘
-Any status except DELIVERED/CANCELLED → CANCELLED
+   ↓           ↓           ↓        ↓
+                      CANCELLED (from any non-final status)
 ```
 
 ---
@@ -267,6 +287,6 @@ Nine models: `User`, `Category`, `MenuItem`, `MenuItemOptionGroup`, `OptionChoic
 
 Key design decisions:
 - `unitPrice` on `OrderItem` is a **price snapshot** — menu price changes don't affect historical orders
-- `OrderItemChoice` is a join table recording exactly which customizations were chosen per line item
+- `OrderItemChoice` records exactly which customizations were chosen per line item
 - `stripePaymentId` on `Order` links to Stripe for refund traceability
-- Orders are created in the **Stripe webhook**, not the client callback — webhooks are retried automatically, client connections are not
+- Orders are created in the **Stripe webhook handler**, not the client callback — webhooks are retried automatically if the client disconnects mid-payment
