@@ -1,0 +1,179 @@
+// This file describes your database structure.
+// Prisma reads it and creates/updates real PostgreSQL tables via migrations.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── ENUMS ──────────────────────────────────────────────────────────────────
+// Enums are like a limited set of allowed values for a field.
+// PostgreSQL enforces them at the database level — you can't store "MANAGER"
+// if only CUSTOMER, STAFF, and ADMIN are defined.
+
+enum Role {
+  CUSTOMER
+  STAFF
+  ADMIN
+}
+
+enum OrderStatus {
+  PENDING      // just placed, awaiting confirmation
+  CONFIRMED    // restaurant accepted it
+  PREPARING    // kitchen is making it
+  READY        // ready for pickup or out for delivery
+  DELIVERED    // completed
+  CANCELLED
+}
+
+enum OrderType {
+  PICKUP
+  DELIVERY
+}
+
+// ── USER ───────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash") // NEVER store plain text passwords
+  role         Role     @default(CUSTOMER)
+  name         String
+  phone        String?  // the ? means optional (nullable)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  orders Order[] // one user → many orders
+
+  @@map("users") // actual table name in PostgreSQL
+}
+
+// ── CATEGORY ───────────────────────────────────────────────────────────────
+// e.g. "Burgers", "Sides", "Drinks", "Desserts"
+
+model Category {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  sortOrder Int      @default(0) @map("sort_order") // controls display order
+  createdAt DateTime @default(now()) @map("created_at")
+
+  items MenuItem[]
+
+  @@map("categories")
+}
+
+// ── MENU ITEM ──────────────────────────────────────────────────────────────
+
+model MenuItem {
+  id          String   @id @default(uuid())
+  categoryId  String   @map("category_id")
+  name        String
+  description String?
+  basePrice   Decimal  @db.Decimal(10, 2) @map("base_price") // e.g. 12.99
+  imageUrl    String?  @map("image_url")    // Cloudinary URL
+  isAvailable Boolean  @default(true) @map("is_available")
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  category     Category              @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  optionGroups MenuItemOptionGroup[]
+  orderItems   OrderItem[]
+
+  @@map("menu_items")
+}
+
+// ── OPTION GROUP ───────────────────────────────────────────────────────────
+// A group of choices for a menu item.
+// Example: MenuItem "Burger" has OptionGroup "Size" and OptionGroup "Toppings"
+
+model MenuItemOptionGroup {
+  id          String   @id @default(uuid())
+  menuItemId  String   @map("menu_item_id")
+  name        String                         // "Size", "Toppings", "Sauce"
+  required    Boolean  @default(false)       // must the customer pick one?
+  multiSelect Boolean  @default(false) @map("multi_select") // checkboxes vs radio
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  menuItem MenuItem       @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  choices  OptionChoice[]
+
+  @@map("menu_item_option_groups")
+}
+
+// ── OPTION CHOICE ──────────────────────────────────────────────────────────
+// Individual choices within a group.
+// Example: Group "Size" → choices "Small" (+$0), "Medium" (+$1), "Large" (+$2)
+
+model OptionChoice {
+  id            String  @id @default(uuid())
+  optionGroupId String  @map("option_group_id")
+  label         String                           // "Large", "Extra Cheese"
+  priceModifier Decimal @default(0) @db.Decimal(10, 2) @map("price_modifier")
+  sortOrder     Int     @default(0) @map("sort_order")
+
+  optionGroup      MenuItemOptionGroup @relation(fields: [optionGroupId], references: [id], onDelete: Cascade)
+  orderItemChoices OrderItemChoice[]
+
+  @@map("option_choices")
+}
+
+// ── ORDER ──────────────────────────────────────────────────────────────────
+
+model Order {
+  id              String      @id @default(uuid())
+  customerId      String      @map("customer_id")
+  status          OrderStatus @default(PENDING)
+  orderType       OrderType   @map("order_type")
+  deliveryAddress String?     @map("delivery_address") // null for PICKUP orders
+  totalAmount     Decimal     @db.Decimal(10, 2) @map("total_amount")
+  stripePaymentId String?     @map("stripe_payment_id") // for refund lookups
+  notes           String?
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+
+  customer User        @relation(fields: [customerId], references: [id])
+  items    OrderItem[]
+
+  @@map("orders")
+}
+
+// ── ORDER ITEM ─────────────────────────────────────────────────────────────
+// Each line in an order (e.g. "2x Margherita Pizza")
+// unitPrice is a SNAPSHOT of the price at the time of ordering.
+// This is important: if the restaurant raises prices later, old orders
+// should still show what the customer actually paid.
+
+model OrderItem {
+  id         String  @id @default(uuid())
+  orderId    String  @map("order_id")
+  menuItemId String  @map("menu_item_id")
+  quantity   Int     @default(1)
+  unitPrice  Decimal @db.Decimal(10, 2) @map("unit_price") // price snapshot
+  notes      String?
+
+  order    Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Restrict)
+  choices  OrderItemChoice[]
+
+  @@map("order_items")
+}
+
+// ── ORDER ITEM CHOICE ──────────────────────────────────────────────────────
+// Records which OptionChoices were selected for each OrderItem.
+// This is a join table: it links an OrderItem to its chosen OptionChoices.
+
+model OrderItemChoice {
+  id             String @id @default(uuid())
+  orderItemId    String @map("order_item_id")
+  optionChoiceId String @map("option_choice_id")
+
+  orderItem    OrderItem    @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  optionChoice OptionChoice @relation(fields: [optionChoiceId], references: [id], onDelete: Restrict)
+
+  @@map("order_item_choices")
+}

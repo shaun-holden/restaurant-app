@@ -1,0 +1,12 @@
+/* Tailwind's three directives inject all of Tailwind's generated CSS here. */
+/* @tailwind base    — resets browser defaults (think normalize.css)          */
+/* @tailwind components — any component-level classes you define with @layer  */
+/* @tailwind utilities  — all the utility classes like flex, text-xl, etc.   */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Any global CSS overrides can go below */
+body {
+  @apply bg-gray-50 text-gray-900;
+}
